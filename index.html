@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>쓰나미 침수 시뮬레이션 · 부산 해운대 (SISTECH 3D 모델)</title>
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.138.0/Build/Cesium/Cesium.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/cesium@1.138.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+  html, body, #map { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  #top { position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 40; display: flex; align-items: center; gap: 12px; padding: 0 14px;
+         background: rgba(12, 20, 34, .82); color: #e8eef7; font-size: 14px; backdrop-filter: blur(4px); }
+  #top b { color: #7fc4ff; letter-spacing: .5px; }
+  #top select, #top button { background: #1d2c44; color: #e8eef7; border: 1px solid #3a5070; border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+  #top button:hover { background: #2a4062; }
+  #top .sp { flex: 1; }
+  #top .muted { color: #9fb0c6; font-size: 12px; }
+  #loading { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; background: rgba(0, 0, 0, .55); }
+  #toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); z-index: 70; background: #1f7a3a; color: #fff; padding: 8px 14px; border-radius: 6px; font-size: 13px; display: none; }
+  .cesium-viewer-bottom { display: none; }
+  #credit { position: fixed; right: 8px; bottom: 4px; z-index: 30; color: #cfd8e3; font-size: 11px; text-shadow: 0 0 3px #000; }
+  #tsunami-panel { top: 56px !important; }
+</style>
+</head>
+<body>
+<div id="top">
+  <b>쓰나미 침수 시뮬레이션</b>
+  <span class="muted">부산 해운대 3D 도시 모델</span>
+  <span class="sp"></span>
+  <select id="proj" title="3D 모델 선택"></select>
+  <button id="share" title="현재 화면 위치와 구역·설정을 담은 링크를 복사합니다">현재 설정 링크 복사</button>
+</div>
+<div id="map"></div>
+<div id="loading">3D 도시 모델을 불러오는 중…</div>
+<div id="toast"></div>
+<div id="credit">3D 모델 © SISTECH · 영상 Esri World Imagery · 결과는 참고용 근사치입니다</div>
+<script>
+(async () => {
+  const PROJECTS = [
+    { id: 'busan_01', name: '부산-1 (해운대)', url: 'https://3dview.sistech3d.com/api/tileset/project/busan_01/tileset.json' },
+    { id: 'busan_city', name: '부산 (마린시티·벡스코)', url: 'https://3dview.sistech3d.com/api/tileset/data/korea/busan/tileset.json' },
+  ];
+  const q = new URLSearchParams(location.hash.slice(1));
+  const proj = PROJECTS.find(p => p.id === q.get('p')) || PROJECTS[0];
+  const sel = document.getElementById('proj');
+  for (const p of PROJECTS) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; if (p === proj) o.selected = true; sel.appendChild(o); }
+  sel.onchange = () => { location.hash = 'p=' + sel.value; location.reload(); };
+  const toast = (m, ms = 2500) => { const t = document.getElementById('toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); };
+
+  const viewer = new Cesium.Viewer('map', {
+    baseLayer: Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer')),
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+    animation: false, timeline: false, geocoder: false, homeButton: false, sceneModePicker: false, baseLayerPicker: false,
+    navigationHelpButton: false, fullscreenButton: false, infoBox: false, selectionIndicator: false,
+  });
+  viewer.scene.globe.depthTestAgainstTerrain = true;
+  viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
+  window.__tsunamiViewer = viewer;
+
+  let tileset;
+  try {
+    tileset = await Cesium.Cesium3DTileset.fromUrl(proj.url, { maximumScreenSpaceError: 8 });
+    viewer.scene.primitives.add(tileset);
+  } catch (e) {
+    document.getElementById('loading').textContent = '3D 모델을 불러오지 못했습니다: ' + e.message;
+    return;
+  }
+
+  // 카메라: 링크에 위치가 있으면 그대로, 없으면 모델 전체
+  const at = (q.get('at') || '').split(',').map(Number);
+  if (at.length >= 5 && at.every(isFinite)) {
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(at[0], at[1], at[2]), orientation: { heading: Cesium.Math.toRadians(at[3]), pitch: Cesium.Math.toRadians(at[4]), roll: 0 } });
+  } else if (proj.id === 'busan_01') {
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(129.1600, 35.1430, 900), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-35), roll: 0 } });
+  } else {
+    await viewer.zoomTo(tileset);
+  }
+
+  // 모델 일부가 보일 때까지 기다린 뒤 쓰나미 기능 불러오기
+  await new Promise(res => { let n = 0; const rm = tileset.allTilesLoaded.addEventListener(() => { rm(); res(); }); setTimeout(res, 15000); });
+  const s = document.createElement('script'); s.src = 'tsunami.js?v=6';
+  await new Promise((res, rej) => { s.onload = res; s.onerror = rej; document.body.appendChild(s); });
+  for (let i = 0; i < 100 && !(window.__tsunami && window.__tsunami.state); i++) await new Promise(r => setTimeout(r, 100));
+  document.getElementById('loading').style.display = 'none';
+  const T = window.__tsunami;
+  if (!T) { toast('쓰나미 기능을 불러오지 못했습니다. 새로 고침해 주세요.', 6000); return; }
+
+  // 링크에 담긴 구역·설정 적용
+  try {
+    const A = (q.get('a') || '').split(',').map(Number);
+    const pts = (q.get('pts') || '').split(';').filter(Boolean).map(s => s.split(',').map(Number));
+    if (A.length >= 2 && A.every(isFinite) && pts.length) {
+      T.setArea(A[0], A[1], pts, isFinite(A[2]) ? A[2] : undefined);
+      for (const k of ['H', 'D', 'W', 'extra', 'seaPad', 'dur']) if (q.has(k)) T.set(k, Number(q.get(k)));
+      if (q.has('b')) T.setBearing(Number(q.get('b')));
+      if (q.has('prec')) { const b = document.querySelector('#tsunami-panel [data-prec=' + q.get('prec') + ']'); if (b) b.click(); }
+      const st = document.querySelector('#tsunami-panel .st');
+      if (st) st.textContent = '공유받은 구역·설정을 불러왔습니다. [계산 실행]을 누르면 결과를 볼 수 있습니다.';
+    }
+  } catch (e) { console.warn('링크 설정 적용 실패', e); }
+
+  // 현재 설정 링크 복사
+  document.getElementById('share').onclick = async () => {
+    const c = viewer.camera, cg = c.positionCartographic, S = T.state;
+    const f = (x, d) => Number(x).toFixed(d);
+    const p = new URLSearchParams();
+    p.set('p', proj.id);
+    p.set('at', [f(Cesium.Math.toDegrees(cg.longitude), 5), f(Cesium.Math.toDegrees(cg.latitude), 5), f(cg.height, 0), f(Cesium.Math.toDegrees(c.heading), 1), f(Cesium.Math.toDegrees(c.pitch), 1)].join(','));
+    if (S.A && S.pts.length) {
+      p.set('a', [f(S.A.lon, 6), f(S.A.lat, 6), f(S.A.h, 2)].join(','));
+      p.set('pts', S.pts.map(q => f(q.lon, 6) + ',' + f(q.lat, 6)).join(';'));
+      for (const k of ['H', 'D', 'W', 'extra', 'seaPad', 'dur']) p.set(k, S[k]);
+      p.set('b', f(S.bearing, 1)); p.set('prec', S.prec);
+    }
+    const url = location.origin + location.pathname + '#' + p.toString();
+    try { await navigator.clipboard.writeText(url); toast('링크를 복사했습니다. 받는 사람이 열면 같은 화면·구역·설정이 나옵니다.'); }
+    catch (e) { prompt('아래 링크를 복사하세요', url); }
+  };
+})();
+</script>
+</body>
+</html>
